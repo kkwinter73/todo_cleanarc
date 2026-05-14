@@ -9,7 +9,7 @@ import (
 // 構造体の定義（ TODO そのもの）
 type Todo struct {
 	ID        int       `json:"id"`
-	Title     string    `json:"title`
+	Title     string    `json:"title"`
 	Done      bool      `json:"done"`
 	CreatedAt time.Time `json:"created_at"`
 }

@@ -1,121 +1,100 @@
+// 動作確認用のスクリプト。
+// リポジトリの Save / FindByID / Delete が実際にPostgreSQLと繋がって動くかを
+// 目視で確認する用途。後で本格的なアプリケーションエントリに置き換える。
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
 	"os"
-	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	// ↓ モジュール名は適宜書き換える
+	"github.com/kkwinter73/todo_cleanarc/domain/todo"
+	"github.com/kkwinter73/todo_cleanarc/infrastructure/persistence"
 )
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
+	ctx := context.Background()
+
+	// 接続文字列は環境変数から取る。
+	// デフォルト値は docker-compose.yml の設定に合わせている。
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		dsn = "postgres://user:password@localhost:5432/todo_app?sslmode=disable"
 	}
 
-	todoList, err := Load(defaultFilePath)
+	// 接続プールを作成
+	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "データの読み込みに失敗しました: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("DB接続失敗: %v", err)
 	}
+	defer pool.Close()
 
-	switch os.Args[1] {
-	case "add":
-		err = runAdd(todoList, os.Args[2:])
-	case "list":
-		runList(todoList)
-		return
-	case "done":
-		err = runDone(todoList, os.Args[2:])
-	case "delete":
-		err = runDelete(todoList, os.Args[2:])
-	default:
-		fmt.Fprintf(os.Stderr, "不明なコマンド: %s\n", os.Args[1])
-		printUsage()
-		os.Exit(1)
+	// 接続確認
+	if err := pool.Ping(ctx); err != nil {
+		log.Fatalf("Ping失敗: %v", err)
 	}
+	fmt.Println("✓ DB接続OK")
 
+	// リポジトリを生成
+	repo := persistence.NewTodoRepository(pool)
+
+	// ============================================================
+	// シナリオ: Todoを作って → 保存 → 取得 → 完了 → 再保存 → 削除
+	// ============================================================
+
+	// 1. ドメインで Todo を作る
+	due := time.Now().Add(7 * 24 * time.Hour)
+	t, err := todo.New("牛乳を買う", &due, todo.PriorityMedium)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "エラー: %v\n", err)
-		os.Exit(1)
+		log.Fatalf("Todo生成失敗: %v", err)
 	}
+	fmt.Printf("✓ Todo生成: ID=%s, Title=%s\n", t.ID(), t.Title())
 
-	if err := Save(todoList, defaultFilePath); err != nil {
-		fmt.Fprintf(os.Stderr, "データの保存に失敗しました: %v\n", err)
-		os.Exit(1)
+	// 2. リポジトリで保存（INSERT）
+	if err := repo.Save(ctx, t); err != nil {
+		log.Fatalf("Save失敗: %v", err)
 	}
-}
+	fmt.Println("✓ Save (INSERT) OK")
 
-func runAdd(tl *TodoList, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("タスク名を指定してください")
-	}
-	todo := tl.Add(args[0])
-	fmt.Printf("✅ タスクを追加しました: [%d] %s\n", todo.ID, todo.Title)
-	return nil
-}
-
-func runList(tl *TodoList) {
-	todos := tl.List()
-	if len(todos) == 0 {
-		fmt.Println("📋 タスクはありません")
-		return
-	}
-	fmt.Println("📋 タスク一覧:")
-	fmt.Println("─────────────────────────────────────")
-	for _, t := range todos {
-		status := "⬜"
-		if t.Done {
-			status = "✅"
-		}
-		fmt.Printf("  %s [%d] %s  (%s)\n",
-			status, t.ID, t.Title,
-			t.CreatedAt.Format("2006-01-02 15:04"),
-		)
-	}
-	fmt.Println("─────────────────────────────────────")
-	fmt.Printf("  合計: %d 件\n", len(todos))
-}
-
-func runDone(tl *TodoList, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("タスクIDを指定してください")
-	}
-	id, err := strconv.Atoi(args[0])
+	// 3. IDで取得
+	found, err := repo.FindByID(ctx, t.ID())
 	if err != nil {
-		return fmt.Errorf("IDは数値で指定してください: %s", args[0])
+		log.Fatalf("FindByID失敗: %v", err)
 	}
-	if err := tl.Done(id); err != nil {
-		return err
-	}
-	fmt.Printf("✅ タスク %d を完了にしました\n", id)
-	return nil
-}
+	fmt.Printf("✓ FindByID OK: Title=%s, Status=%s\n", found.Title(), found.Status())
 
-func runDelete(tl *TodoList, args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("タスクIDを指定してください")
+	// 4. 完了状態にして再保存（UPDATE）
+	found.Complete(time.Now())
+	if err := repo.Save(ctx, found); err != nil {
+		log.Fatalf("再Save失敗: %v", err)
 	}
-	id, err := strconv.Atoi(args[0])
+	fmt.Println("✓ Save (UPDATE) OK")
+
+	// 5. 再取得して完了状態を確認
+	found2, err := repo.FindByID(ctx, t.ID())
 	if err != nil {
-		return fmt.Errorf("IDは数値で指定してください: %s", args[0])
+		log.Fatalf("再FindByID失敗: %v", err)
 	}
-	if err := tl.Delete(id); err != nil {
-		return err
+	fmt.Printf("✓ 再取得: Status=%s, CompletedAt=%v\n", found2.Status(), found2.CompletedAt())
+
+	// 6. 削除
+	if err := repo.Delete(ctx, t.ID()); err != nil {
+		log.Fatalf("Delete失敗: %v", err)
 	}
-	fmt.Printf("🗑️  タスク %d を削除しました\n", id)
-	return nil
-}
+	fmt.Println("✓ Delete OK")
 
-func printUsage() {
-	fmt.Println(`
-📝 Go TODO CLI
+	// 7. 削除後にFindByIDするとErrTodoNotFoundが返るはず
+	_, err = repo.FindByID(ctx, t.ID())
+	if err == persistence.ErrTodoNotFound {
+		fmt.Println("✓ 削除後のFindByIDで ErrTodoNotFound が返った（期待通り）")
+	} else {
+		log.Fatalf("期待外のエラー: %v", err)
+	}
 
-使い方:
-  go run . <command> [arguments]
-
-コマンド:
-  add <title>    タスクを追加する
-  list           タスク一覧を表示する
-  done <id>      タスクを完了にする
-  delete <id>    タスクを削除する`)
+	fmt.Println("\n全シナリオ成功 🎉")
 }
