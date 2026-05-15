@@ -1,6 +1,14 @@
-// 動作確認用のスクリプト。
-// リポジトリの Save / FindByID / Delete が実際にPostgreSQLと繋がって動くかを
-// 目視で確認する用途。後で本格的なアプリケーションエントリに置き換える。
+// main.go はアプリケーションの組み立て係(Composition Root)。
+//
+// この場所だけが、全ての層の具体型を知っている特別な場所。
+// インフラ・アプリケーション・(将来的に)プレゼンテーション層の実体をここで生成し、
+// 依存を「外側から内側へ」注入していく。
+//
+// 動作確認用のシナリオ:
+//
+//	Create → Find → Complete → Find → Delete
+//
+// 本物のCLIやHTTPサーバーを実装するまでの繋ぎとして使う。
 package main
 
 import (
@@ -12,7 +20,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	// ↓ モジュール名は適宜書き換える
+	"github.com/kkwinter73/todo_cleanarc/application"
 	"github.com/kkwinter73/todo_cleanarc/domain/todo"
 	"github.com/kkwinter73/todo_cleanarc/infrastructure/persistence"
 )
@@ -20,78 +28,84 @@ import (
 func main() {
 	ctx := context.Background()
 
-	// 接続文字列は環境変数から取る。
-	// デフォルト値は docker-compose.yml の設定に合わせている。
+	// ============================================================
+	// 1. インフラ層の組み立て: DB接続プール + リポジトリ
+	// ============================================================
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" {
 		dsn = "postgres://user:password@localhost:5432/todo_app?sslmode=disable"
 	}
 
-	// 接続プールを作成
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
 		log.Fatalf("DB接続失敗: %v", err)
 	}
 	defer pool.Close()
 
-	// 接続確認
 	if err := pool.Ping(ctx); err != nil {
 		log.Fatalf("Ping失敗: %v", err)
 	}
 	fmt.Println("✓ DB接続OK")
 
-	// リポジトリを生成
+	// インフラ層の実体を生成。
+	// repo の型は *persistence.TodoRepository だが、
+	// アプリ層に渡すときは todo.Repository インターフェースとして扱われる。
 	repo := persistence.NewTodoRepository(pool)
 
 	// ============================================================
-	// シナリオ: Todoを作って → 保存 → 取得 → 完了 → 再保存 → 削除
+	// 2. アプリケーション層の組み立て: TodoService
+	// ============================================================
+	// 依存を注入する: リポジトリと時計
+	// アプリ層は repo の具体型(PostgreSQL実装)を知らない。
+	// インターフェース越しに呼び出すだけ。
+	service := application.NewTodoService(repo, application.SystemClock{})
+
+	// ============================================================
+	// 3. 動作確認シナリオ(プレゼン層の代わりに main から直接呼ぶ)
 	// ============================================================
 
-	// 1. ドメインで Todo を作る
+	// Create
 	due := time.Now().Add(7 * 24 * time.Hour)
-	t, err := todo.New("牛乳を買う", &due, todo.PriorityMedium)
+	out, err := service.CreateTodo(ctx, application.CreateTodoInput{
+		Title:    "牛乳を買う",
+		DueDate:  &due,
+		Priority: todo.PriorityMedium,
+	})
 	if err != nil {
-		log.Fatalf("Todo生成失敗: %v", err)
+		log.Fatalf("CreateTodo失敗: %v", err)
 	}
-	fmt.Printf("✓ Todo生成: ID=%s, Title=%s\n", t.ID(), t.Title())
+	fmt.Printf("✓ CreateTodo OK: ID=%s\n", out.ID)
 
-	// 2. リポジトリで保存（INSERT）
-	if err := repo.Save(ctx, t); err != nil {
-		log.Fatalf("Save失敗: %v", err)
-	}
-	fmt.Println("✓ Save (INSERT) OK")
-
-	// 3. IDで取得
-	found, err := repo.FindByID(ctx, t.ID())
+	// Find (確認のため、リポジトリ直接呼び出し)
+	t1, err := repo.FindByID(ctx, out.ID)
 	if err != nil {
 		log.Fatalf("FindByID失敗: %v", err)
 	}
-	fmt.Printf("✓ FindByID OK: Title=%s, Status=%s\n", found.Title(), found.Status())
+	fmt.Printf("✓ FindByID OK: Title=%s, Status=%s\n", t1.Title(), t1.Status())
 
-	// 4. 完了状態にして再保存（UPDATE）
-	found.Complete(time.Now())
-	if err := repo.Save(ctx, found); err != nil {
-		log.Fatalf("再Save失敗: %v", err)
+	// Complete
+	if err := service.CompleteTodo(ctx, out.ID); err != nil {
+		log.Fatalf("CompleteTodo失敗: %v", err)
 	}
-	fmt.Println("✓ Save (UPDATE) OK")
+	fmt.Println("✓ CompleteTodo OK")
 
-	// 5. 再取得して完了状態を確認
-	found2, err := repo.FindByID(ctx, t.ID())
+	// 再Find
+	t2, err := repo.FindByID(ctx, out.ID)
 	if err != nil {
 		log.Fatalf("再FindByID失敗: %v", err)
 	}
-	fmt.Printf("✓ 再取得: Status=%s, CompletedAt=%v\n", found2.Status(), found2.CompletedAt())
+	fmt.Printf("✓ 再取得: Status=%s, CompletedAt=%v\n", t2.Status(), t2.CompletedAt())
 
-	// 6. 削除
-	if err := repo.Delete(ctx, t.ID()); err != nil {
-		log.Fatalf("Delete失敗: %v", err)
+	// Delete
+	if err := service.DeleteTodo(ctx, out.ID); err != nil {
+		log.Fatalf("DeleteTodo失敗: %v", err)
 	}
-	fmt.Println("✓ Delete OK")
+	fmt.Println("✓ DeleteTodo OK")
 
-	// 7. 削除後にFindByIDするとErrTodoNotFoundが返るはず
-	_, err = repo.FindByID(ctx, t.ID())
+	// 削除確認
+	_, err = repo.FindByID(ctx, out.ID)
 	if err == persistence.ErrTodoNotFound {
-		fmt.Println("✓ 削除後のFindByIDで ErrTodoNotFound が返った（期待通り）")
+		fmt.Println("✓ 削除後のFindByIDで ErrTodoNotFound が返った(期待通り)")
 	} else {
 		log.Fatalf("期待外のエラー: %v", err)
 	}
