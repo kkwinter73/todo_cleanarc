@@ -80,10 +80,6 @@ type CreateTodoOutput struct {
 }
 
 // CreateTodo は新しいTodoを作成して保存する。
-//
-// 段取り:
-//  1. ドメインのNewでTodoを生成(バリデーションはドメインが行う)
-//  2. リポジトリで保存する
 func (s *TodoService) CreateTodo(ctx context.Context, in CreateTodoInput) (*CreateTodoOutput, error) {
 	t, err := todo.New(in.Title, in.DueDate, in.Priority)
 	if err != nil {
@@ -96,18 +92,45 @@ func (s *TodoService) CreateTodo(ctx context.Context, in CreateTodoInput) (*Crea
 }
 
 // ============================================================
+// FindTodo: IDでTodoを1件取得する
+// ============================================================
+
+// FindTodoOutput は FindTodo ユースケースの出力。
+// ドメインの Todo をそのまま返さず、プレゼン層に渡しやすい形にする。
+//
+// 注: ドメインの Todo を直接返す設計もありうるが、
+// 「アプリ層の出力はDTOで表現する」一貫性のためここでも専用型を使う。
+type FindTodoOutput struct {
+	ID          todo.ID
+	Title       string
+	DueDate     *time.Time
+	Priority    todo.Priority
+	Status      todo.Status
+	CompletedAt *time.Time
+}
+
+// FindTodo はIDでTodoを1件取得する。
+// 見つからない場合はリポジトリ実装が返すエラー(ErrTodoNotFound等)がそのまま返る。
+func (s *TodoService) FindTodo(ctx context.Context, id todo.ID) (*FindTodoOutput, error) {
+	t, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return &FindTodoOutput{
+		ID:          t.ID(),
+		Title:       t.Title(),
+		DueDate:     t.DueDate(),
+		Priority:    t.Priority(),
+		Status:      t.Status(),
+		CompletedAt: t.CompletedAt(),
+	}, nil
+}
+
+// ============================================================
 // CompleteTodo: Todoを完了状態にする
 // ============================================================
 
 // CompleteTodo は指定IDのTodoを完了状態にする。
-//
-// 段取り:
-//  1. リポジトリからTodoを取得
-//  2. ドメインのComplete()を呼ぶ(冪等・業務ルールはドメインが守る)
-//  3. リポジトリに保存
-//
-// 時刻は Clock 経由で取得し、ドメインに引数として渡す。
-// (ドメイン層のメソッドは time.Now() を呼ばず、時刻を引数で受け取る設計)
 func (s *TodoService) CompleteTodo(ctx context.Context, id todo.ID) error {
 	t, err := s.repo.FindByID(ctx, id)
 	if err != nil {
@@ -122,13 +145,6 @@ func (s *TodoService) CompleteTodo(ctx context.Context, id todo.ID) error {
 // ============================================================
 
 // DeleteTodo は指定IDのTodoを削除する。
-//
-// 段取り:
-//  1. リポジトリのDelete()を呼ぶ
-//
-// シンプルなのでドメイン呼び出しはない。
-// もし将来「削除には所有者チェックが必要」などの業務ルールが増えたら、
-// その時点で FindByID -> ドメインルール検証 -> Delete のフローに変える。
 func (s *TodoService) DeleteTodo(ctx context.Context, id todo.ID) error {
 	return s.repo.Delete(ctx, id)
 }

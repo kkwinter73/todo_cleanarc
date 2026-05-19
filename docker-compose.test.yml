@@ -1,0 +1,23 @@
+
+version: '3.8'
+
+# このファイルはテスト用のDB起動設定。
+# 開発用の docker-compose.yml とは別に動かす。
+#
+# 起動: docker compose -f docker-compose.test.yml up -d
+# 停止: docker compose -f docker-compose.test.yml down
+#
+# ポートを 5433 にしているのは、本番開発用の 5432 と衝突させないため。
+# 同時に両方起動できる状態にしてある。
+
+services:
+  db_test:
+    image: postgres:16-alpine
+    container_name: todo_db_test
+    environment:
+      POSTGRES_USER: testuser
+      POSTGRES_PASSWORD: testpassword
+      POSTGRES_DB: todo_app_test
+    ports:
+      - "5433:5432"   # ホスト側 5433 → コンテナ内 5432
+    # volumes は付けない: テストDBは毎回まっさらでOK、永続化不要
