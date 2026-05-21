@@ -1,3 +1,4 @@
+// presentation/http/todo_handler.go
 package httpx
 
 import (
@@ -12,42 +13,34 @@ import (
 
 // TodoHandler はTodoに関するHTTPハンドラ。
 //
-// 依存はアプリケーション層のみ。
-// インフラ層やドメイン層の具体型は(エラー判定を除き)直接呼ばない。
+// 依存はアプリケーション層の「インターフェース」(application.TodoUsecase)のみ。
+// 具象の *application.TodoService や、ましてやインフラ・ドメインの実装には依存しない。
 type TodoHandler struct {
-	service *application.TodoService
+	service application.TodoUsecase
 }
 
 // NewTodoHandler はTodoHandlerのコンストラクタ。
-func NewTodoHandler(service *application.TodoService) *TodoHandler {
+// 引数はインターフェース型なので、本物のTodoServiceでもテスト用モックでも注入できる。
+func NewTodoHandler(service application.TodoUsecase) *TodoHandler {
 	return &TodoHandler{service: service}
 }
 
-// ============================================================
-// POST /todos: 新規作成
-// ============================================================
+// 以下のメソッド本体は元のコードのまま。
+// service の型がインターフェースに変わっただけで、呼び出し側のコードは変更不要。
 
-// 段取り:
-//  1. リクエストボディ(JSON)をパース
-//  2. ドメインの型に変換
-//  3. アプリ層のCreateTodoを呼ぶ
-//  4. 結果をJSONで返す(201 Created)
 func (h *TodoHandler) Create(w http.ResponseWriter, r *http.Request) {
-	// 1. リクエストパース
 	var req CreateTodoRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeBadRequest(w, "リクエストの形式が不正です: "+err.Error())
 		return
 	}
 
-	// 2. 日時の文字列を *time.Time に変換
 	due, err := parseTime(req.DueDate)
 	if err != nil {
 		writeBadRequest(w, "due_date は RFC3339 形式で指定してください")
 		return
 	}
 
-	// 3. アプリ層呼び出し
 	out, err := h.service.CreateTodo(r.Context(), application.CreateTodoInput{
 		Title:    req.Title,
 		DueDate:  due,
@@ -58,16 +51,10 @@ func (h *TodoHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. レスポンス生成(201 Created)
 	writeJSON(w, http.StatusCreated, CreatedResponse{ID: out.ID.String()})
 }
 
-// ============================================================
-// GET /todos/{id}: 1件取得
-// ============================================================
-
 func (h *TodoHandler) Find(w http.ResponseWriter, r *http.Request) {
-	// chi.URLParam で URLパスから {id} を取り出す
 	idStr := chi.URLParam(r, "id")
 	if idStr == "" {
 		writeBadRequest(w, "id は必須です")
@@ -80,7 +67,6 @@ func (h *TodoHandler) Find(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Output → レスポンスDTOに変換
 	resp := TodoResponse{
 		ID:          out.ID.String(),
 		Title:       out.Title,
@@ -91,10 +77,6 @@ func (h *TodoHandler) Find(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
-
-// ============================================================
-// POST /todos/{id}/complete: 完了
-// ============================================================
 
 func (h *TodoHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
@@ -108,7 +90,6 @@ func (h *TodoHandler) Complete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 完了後の状態を取得して返す(UX的に有用)
 	out, err := h.service.FindTodo(r.Context(), todo.ID(idStr))
 	if err != nil {
 		writeError(w, err)
@@ -125,10 +106,6 @@ func (h *TodoHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// ============================================================
-// DELETE /todos/{id}: 削除
-// ============================================================
-
 func (h *TodoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	idStr := chi.URLParam(r, "id")
 	if idStr == "" {
@@ -141,6 +118,5 @@ func (h *TodoHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 204 No Content: 成功・本体なし
 	w.WriteHeader(http.StatusNoContent)
 }
