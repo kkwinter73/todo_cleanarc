@@ -19,13 +19,40 @@ import (
 )
 
 // ============================================================
+// TodoUsecase: Todoユースケースの契約
+// ============================================================
+
+// TodoUsecase はTodoに関するユースケースの契約。
+//
+// アプリケーション層が外側(プレゼン層)に対して公開する「窓口」。
+// プレゼン層はこのインターフェースに依存し、TodoService(具象)には直接依存しない。
+//
+// 設計方針:
+//   - クリーンアーキテクチャ原典に沿い、ユースケースの抽象は
+//     「呼ばれる側」であるアプリケーション層で定義する。
+//   - インターフェースと実装(TodoService)が同じパッケージに置かれるため、
+//     メソッド追加時の同期が取りやすい。
+type TodoUsecase interface {
+	CreateTodo(ctx context.Context, in CreateTodoInput) (*CreateTodoOutput, error)
+	FindTodo(ctx context.Context, id todo.ID) (*FindTodoOutput, error)
+	CompleteTodo(ctx context.Context, id todo.ID) error
+	DeleteTodo(ctx context.Context, id todo.ID) error
+}
+
+// コンパイル時に TodoService が TodoUsecase を満たすことを保証する。
+//
+// この行があると、将来 TodoUsecase にメソッドを追加した時に
+// TodoService 側に未実装があれば、コンパイルエラーで即座に気づける。
+var _ TodoUsecase = (*TodoService)(nil)
+
+// ============================================================
 // Clock: 時刻取得を抽象化する
 // ============================================================
 
 // Clock は現在時刻を取得するインターフェース。
 //
 // アプリケーション層から time.Now() を直接呼ばずに、
-// このインターフェース経由で時刻を取得する。
+// このインターフェース経由で時刻を取得する。a
 // これによりテスト時に時刻を固定でき、テスタビリティが上がる。
 type Clock interface {
 	Now() time.Time
